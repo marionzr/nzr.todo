@@ -1,11 +1,36 @@
 from flask import Flask, request, jsonify
 import uuid
 from datetime import datetime
+import sqlite3
+import os
 
 app = Flask(__name__)
 
-# In-memory database for todos
-todos = {}
+# Database setup
+DB_PATH = "../../todos.db"
+
+def init_db():
+    """Initialize the SQLite database with tables if they don't exist"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # Create todos table
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS todos (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT,
+        completed BOOLEAN DEFAULT 0,
+        created_at TIMESTAMP,
+        updated_at TIMESTAMP
+    )
+    ''')
+
+    conn.commit()
+    conn.close()
+
+# Initialize DB on startup
+init_db()
 
 # Data validation helper
 def validate_todo(data):
@@ -16,7 +41,7 @@ def validate_todo(data):
     if 'title' not in data:
         return False, "Title is required"
 
-    if 'title' == "":
+    if not data['title'] or data['title'].strip() == "":
         return False, "Title cannot be empty"
 
     return True, ""
@@ -24,28 +49,41 @@ def validate_todo(data):
 @app.route('/todos', methods=['GET'])
 def get_todos():
     """Get all todos or filter by completed status"""
-    completed = request.args.get('completed')
+    completed_param = request.args.get('completed')
 
-    if completed is not None:
-        completed = completed.lower() == 'true'
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row  # This enables column access by name
+    cursor = conn.cursor()
 
-        filtered_todos = {
-            id: todo for id, todo in todos.items() if todo['completed'] == completed
-        }
+    if completed_param is not None:
+        # Convert string parameter to boolean
+        completed = completed_param.lower() == 'true'
+        cursor.execute('SELECT * FROM todos WHERE completed = ?', (completed,))
+    else:
+        cursor.execute('SELECT * FROM todos')
 
-        return jsonify(list(filtered_todos.values()))
+    # Fetch all rows and convert to list of dicts
+    todos = [dict(row) for row in cursor.fetchall()]
 
-    return jsonify(list(todos.values()))
+    conn.close()
+    return jsonify(todos)
 
 @app.route('/todos/<todo_id>', methods=['GET'])
 def get_todo(todo_id):
     """Get a specific todo by ID"""
-    todo = todos.get(todo_id)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT * FROM todos WHERE id = ?', (todo_id,))
+    todo = cursor.fetchone()
+
+    conn.close()
 
     if not todo:
         return jsonify({"error": "Todo not found"}), 404
 
-    return jsonify(todo)
+    return jsonify(dict(todo))
 
 @app.route('/todos', methods=['POST'])
 def create_todo():
@@ -53,57 +91,111 @@ def create_todo():
     data = request.get_json()
 
     is_valid, error = validate_todo(data)
-
     if not is_valid:
         return jsonify({"error": error}), 400
 
     todo_id = str(uuid.uuid4())
-    new_todo = {
-        "id": todo_id,
-        "title": data['title'],
-        "description": data.get('description', ''),
-        "completed": data.get('completed', False),
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat()
-    }
+    now = datetime.now().isoformat()
 
-    todos[todo_id] = new_todo
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        'INSERT INTO todos (id, title, description, completed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+        (
+            todo_id,
+            data['title'],
+            data.get('description', ''),
+            data.get('completed', False),
+            now,
+            now
+        )
+    )
+
+    conn.commit()
+
+    # Get the inserted todo
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM todos WHERE id = ?', (todo_id,))
+    new_todo = dict(cursor.fetchone())
+
+    conn.close()
 
     return jsonify(new_todo), 201
 
 @app.route('/todos/<todo_id>', methods=['PUT'])
 def update_todo(todo_id):
     """Update an existing todo"""
-    todo = todos.get(todo_id)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    # Check if todo exists
+    cursor.execute('SELECT * FROM todos WHERE id = ?', (todo_id,))
+    todo = cursor.fetchone()
+
     if not todo:
+        conn.close()
         return jsonify({"error": "Todo not found"}), 404
 
     data = request.get_json()
+    todo_dict = dict(todo)
+    now = datetime.now().isoformat()
 
     # Update fields if provided
     if 'title' in data:
-        if data['title'] == "":
+        if not data['title'] or data['title'].strip() == "":
+            conn.close()
             return jsonify({"error": "Title cannot be empty"}), 400
-
-        todo['title'] = data['title']
+        todo_dict['title'] = data['title']
 
     if 'description' in data:
-        todo['description'] = data['description']
+        todo_dict['description'] = data['description']
 
     if 'completed' in data:
-        todo['completed'] = data['completed']
+        todo_dict['completed'] = data['completed']
 
-    todo['updated_at'] = datetime.now().isoformat()
+    # Update the record
+    cursor.execute(
+        'UPDATE todos SET title = ?, description = ?, completed = ?, updated_at = ? WHERE id = ?',
+        (
+            todo_dict['title'],
+            todo_dict['description'],
+            todo_dict['completed'],
+            now,
+            todo_id
+        )
+    )
 
-    return jsonify(todo)
+    conn.commit()
+
+    # Get the updated todo
+    cursor.execute('SELECT * FROM todos WHERE id = ?', (todo_id,))
+    updated_todo = dict(cursor.fetchone())
+
+    conn.close()
+
+    return jsonify(updated_todo)
 
 @app.route('/todos/<todo_id>', methods=['DELETE'])
 def delete_todo(todo_id):
     """Delete a todo"""
-    if todo_id not in todos:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # Check if todo exists
+    cursor.execute('SELECT id FROM todos WHERE id = ?', (todo_id,))
+    todo = cursor.fetchone()
+
+    if not todo:
+        conn.close()
         return jsonify({"error": "Todo not found"}), 404
 
-    del todos[todo_id]
+    # Delete the todo
+    cursor.execute('DELETE FROM todos WHERE id = ?', (todo_id,))
+    conn.commit()
+    conn.close()
 
     return jsonify({"message": "Todo deleted successfully"}), 200
 

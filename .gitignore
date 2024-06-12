@@ -83,3 +83,5 @@ dist/
 *.pnp.*
 .vscode/
 .idea/
+
+todos.db

@@ -126,8 +126,3 @@ Each todo item has the following structure:
   "updated_at": "ISO-8601 timestamp"
 }
 ```
-
-## Notes
-
-- This implementation uses an in-memory data store. Data will be lost when the server restarts.
-
