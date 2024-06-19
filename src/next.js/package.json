@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "next": "^14.0.0",
+    "sqlite": "^5.0.1",
+    "sqlite3": "^5.1.6",
     "uuid": "^9.0.0"
   }
 }

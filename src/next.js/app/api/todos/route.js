@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
-import { todos } from '../todos-store';
+import { getDb, rowToTodo } from '../todos-store';
 
 // Helper function to validate todo data
 function validateTodo(data) {
-  // Check if required fields exist
   if (!data || typeof data !== 'object') {
     return { valid: false, error: "Invalid data format" };
   }
@@ -22,17 +21,29 @@ function validateTodo(data) {
 
 // GET all todos or filter by completed status
 export async function GET(request) {
-  const { searchParams } = new URL(request.url);
-  const completedParam = searchParams.get('completed');
+  try {
+    const db = await getDb();
+    const { searchParams } = new URL(request.url);
+    const completedParam = searchParams.get('completed');
 
-  if (completedParam !== null) {
-    const completed = completedParam.toLowerCase() === 'true';
-    const filteredTodos = Object.values(todos).filter(todo => todo.completed === completed);
+    let todos;
 
-    return NextResponse.json(filteredTodos);
+    if (completedParam !== null) {
+      const completed = completedParam.toLowerCase() === 'true' ? 1 : 0;
+      todos = await db.all('SELECT * FROM todos WHERE completed = ?', completed);
+    } else {
+      todos = await db.all('SELECT * FROM todos');
+    }
+
+    // Convert SQLite rows to Todo objects (convert completed from 0/1 to boolean)
+    const formattedTodos = todos.map(rowToTodo);
+
+    return NextResponse.json(formattedTodos);
+
+  } catch (error) {
+    console.error('Error getting todos:', error);
+    return NextResponse.json({ error: "Failed to get todos" }, { status: 500 });
   }
-
-  return NextResponse.json(Object.values(todos));
 }
 
 // POST create a new todo
@@ -45,6 +56,7 @@ export async function POST(request) {
       return NextResponse.json({ error: validation.error }, { status: 400 });
     }
 
+    const db = await getDb();
     const todoId = uuidv4();
     const now = new Date().toISOString();
 
@@ -52,15 +64,23 @@ export async function POST(request) {
       id: todoId,
       title: data.title,
       description: data.description || '',
-      completed: data.completed || false,
+      completed: data.completed ? 1 : 0,
       created_at: now,
       updated_at: now
     };
 
-    todos[todoId] = newTodo;
+    await db.run(
+      'INSERT INTO todos (id, title, description, completed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [newTodo.id, newTodo.title, newTodo.description, newTodo.completed, newTodo.created_at, newTodo.updated_at]
+    );
 
-    return NextResponse.json(newTodo, { status: 201 });
+    // Convert the SQLite row format back to the API format
+    return NextResponse.json({
+      ...newTodo,
+      completed: Boolean(newTodo.completed) // Convert back to boolean for the response
+    }, { status: 201 });
   } catch (error) {
+    console.error('Error creating todo:', error);
     return NextResponse.json({ error: "Failed to create todo" }, { status: 500 });
   }
 }

@@ -1,64 +1,106 @@
 import { NextResponse } from 'next/server';
-import { todos } from '../../todos-store';
+import { getDb, rowToTodo } from '../../db';
 
 // GET a specific todo by ID
 export async function GET(request, { params }) {
-  const todoId = params.todoId;
-  const todo = todos[todoId];
+  try {
+    const todoId = params.todoId;
+    const db = await getDb();
 
-  if (!todo) {
-    return NextResponse.json({ error: "Todo not found" }, { status: 404 });
+    const todo = await db.get('SELECT * FROM todos WHERE id = ?', todoId);
+
+    if (!todo) {
+      return NextResponse.json({ error: "Todo not found" }, { status: 404 });
+    }
+
+    return NextResponse.json(rowToTodo(todo));
+  } catch (error) {
+    console.error('Error getting todo:', error);
+    return NextResponse.json({ error: "Failed to get todo" }, { status: 500 });
   }
-
-  return NextResponse.json(todo);
 }
 
 // PUT update an existing todo
 export async function PUT(request, { params }) {
-  const todoId = params.todoId;
-  const todo = todos[todoId];
-
-  if (!todo) {
-    return NextResponse.json({ error: "Todo not found" }, { status: 404 });
-  }
-
   try {
+    const todoId = params.todoId;
+    const db = await getDb();
+
+    // Check if todo exists
+    const existingTodo = await db.get('SELECT * FROM todos WHERE id = ?', todoId);
+    if (!existingTodo) {
+      return NextResponse.json({ error: "Todo not found" }, { status: 404 });
+    }
+
     const data = await request.json();
 
-    // Update fields if provided
-    if (data.title !== undefined) {
-      if (data.title === "") {
-        return NextResponse.json({ error: "Title cannot be empty" }, { status: 400 });
-      }
+    // Validate title if provided
+    if (data.title !== undefined && data.title === "") {
+      return NextResponse.json({ error: "Title cannot be empty" }, { status: 400 });
+    }
 
-      todo.title = data.title;
+    const now = new Date().toISOString();
+    const updates = [];
+    const values = [];
+
+    // Build dynamic update query
+    if (data.title !== undefined) {
+      updates.push('title = ?');
+      values.push(data.title);
     }
 
     if (data.description !== undefined) {
-      todo.description = data.description;
+      updates.push('description = ?');
+      values.push(data.description);
     }
 
     if (data.completed !== undefined) {
-      todo.completed = data.completed;
+      updates.push('completed = ?');
+      values.push(data.completed ? 1 : 0);
     }
 
-    todo.updated_at = new Date().toISOString();
+    // Always update the updated_at field
+    updates.push('updated_at = ?');
+    values.push(now);
 
-    return NextResponse.json(todo);
+    // Add todoId as the last value for WHERE clause
+    values.push(todoId);
+
+    // Execute the update
+    await db.run(
+      `UPDATE todos SET ${updates.join(', ')} WHERE id = ?`,
+      values
+    );
+
+    // Get the updated todo
+    const updatedTodo = await db.get('SELECT * FROM todos WHERE id = ?', todoId);
+
+    return NextResponse.json(rowToTodo(updatedTodo));
   } catch (error) {
+    console.error('Error updating todo:', error);
     return NextResponse.json({ error: "Failed to update todo" }, { status: 500 });
   }
 }
 
 // DELETE a todo
 export async function DELETE(request, { params }) {
-  const todoId = params.todoId;
+  try {
+    const todoId = params.todoId;
+    const db = await getDb();
 
-  if (!todos[todoId]) {
-    return NextResponse.json({ error: "Todo not found" }, { status: 404 });
+    // Check if todo exists
+    const existingTodo = await db.get('SELECT * FROM todos WHERE id = ?', todoId);
+
+    if (!existingTodo) {
+      return NextResponse.json({ error: "Todo not found" }, { status: 404 });
+    }
+
+    // Delete the todo
+    await db.run('DELETE FROM todos WHERE id = ?', todoId);
+
+    return NextResponse.json({ message: "Todo deleted successfully" }, { status: 200 });
+  } catch (error) {
+    console.error('Error deleting todo:', error);
+    return NextResponse.json({ error: "Failed to delete todo" }, { status: 500 });
   }
-
-  delete todos[todoId];
-
-  return NextResponse.json({ message: "Todo deleted successfully" }, { status: 200 });
 }
